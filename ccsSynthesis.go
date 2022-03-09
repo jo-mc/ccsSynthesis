@@ -3,7 +3,10 @@
 // license that can be found in the LICENSE file.
 
 // Generate synthetic CCS reads from a alignment.
-//
+// COMMAND:  ./ccsSynthesis /PATH/GRCH38chr8-REF.fa > /PATH/chr8_revcompSim.fa
+//  argument = region/contig/chromosome to be split into reads
+// read length to generate: line 51 ccs =
+// read depth : line 52 divisor of ccs   ( ie ccs /20  +> read depth of twenty )
 
 package main
 
@@ -12,9 +15,10 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"strconv"
 	"time"
 
-	//"log"
+	"log"
 	"os"
 	//"REGSPLT/rs"
 	//	ars "regsplt/rs"
@@ -43,13 +47,28 @@ var errFile string
 var err error
 
 func main() {
+
+	outfile, err := os.OpenFile("out.fa", os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer outfile.Close()
+	w := bufio.NewWriter(outfile)
+
+	file, err := os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.SetOutput(file)
+
 	stTime := time.Now()
-	fmt.Println("Starting time is", stTime)
-	fmt.Println("Generating CCS 15 Kb reads 20x")
+	log.Println("Starting time is", stTime)
+	log.Println("Generating CCS 15 Kb reads 20x")
 	ccs := 15000    //15000   test 50
 	gap := ccs / 20 // 15000 / 20  test 5
 	nccs := ccs
 	ngap := gap
+	RevCompAlternate := true //false
 
 	pipeorfileOK() // test we have a pipe in or a file in, will quit if neither or both.
 	//  OPEN READER file or PIPE!!
@@ -59,15 +78,41 @@ func main() {
 	if len(os.Args) > 1 {
 		file, err := os.Open(os.Args[1])
 		if err != nil {
-			fmt.Println("error opening file= ", err)
+			log.Println("error opening file= ", err)
 			os.Exit(1)
 		}
 		defer file.Close()
 		r = bufio.NewReader(file)
+		log.Println("Input file is ", os.Args[1])
 	} else {
 		r = bufio.NewReader(os.Stdin)
+		log.Println("Getting data from PIPE")
 	}
 
+	var readDepth int
+	var readSize int
+	var noVAR string
+	noVAR = ""
+	if len(os.Args) > 3 {
+		readSize, err = strconv.Atoi(os.Args[3])
+		if err == nil {
+			ccs = readSize
+			nccs = ccs
+			gap = ccs / 20
+			ngap = gap
+		}
+	}
+	if len(os.Args) > 2 {
+		readDepth, err = strconv.Atoi(os.Args[2])
+		if err == nil {
+			gap = ccs / readDepth
+			ngap = gap
+		}
+
+	}
+	if len(os.Args) > 4 {
+		noVAR = os.Args[4]
+	}
 	var linesRead uint32 = 0
 	var regions int = 0
 	var index int = 1
@@ -79,7 +124,7 @@ func main() {
 	for { // j := 1; j <= ; j++                ENDLESS LOOP
 		fdata, e := Readln(r)
 		linesRead++
-		if e == nil {
+		if e == nil && len(fdata) > 0 { //  and not blank line?  will exit if have a blank line?  -> loop over till line with data or eof?
 			if fdata[0:1] == ">" {
 				rName = fdata
 				regions++
@@ -87,44 +132,54 @@ func main() {
 				bp += len(fdata)
 				fasta = append(fasta, []rune(fdata)...)
 				for len(fasta) >= nccs { // while loop!
-					aRead = string(fasta[:nccs])
+					//aRead = string(fasta[:nccs])
+					aRead = string(fasta[22 : nccs-22]) // have 22bp gap b.w reads
 					rID += 1
 					if rID == 1 {
-						fmt.Printf(">|%09d|%03d:%05d:|%d| gap:ccs:index: Settings- gap %d target size: %d %s \n", rID, ngap, nccs, index, gap, ccs, rName)
+						fmt.Fprintf(w, ">I%09dI%03d:%05d:I%dI 22bp b/w gap:ccs:index: Settings- gap %d target size: %d %s \n", rID, ngap, nccs, index, gap, ccs, rName)
 					} else {
-						fmt.Printf(">|%09d|%03d:%05d:|%d|%s\n", rID, ngap, nccs, index, rName)
+						if RevCompAlternate {
+							fmt.Fprintf(w, ">I%09dI%03d:%05d:I%dIRevCompI%s\n", rID, ngap, nccs, index, rName)
+						} else {
+							fmt.Fprintf(w, ">I%09dI%03d:%05d:I%dI%s\n", rID, ngap, nccs, index, rName)
+						}
 					}
-					//if rID%2 == 0 {
-					fmt.Printf("%s\n", aRead)
-					//} else {
-					//	fmt.Printf("%s\n", revComp(aRead))
-					//}
+					if RevCompAlternate {
+						if rID%2 == 0 {
+							fmt.Fprintf(w, "%s\n", aRead)
+						} else {
+							fmt.Fprintf(w, "%s\n", revComp(aRead))
+						}
+					} else {
+						fmt.Fprintf(w, "%s\n", aRead)
+					}
 					// variation
 					theta := math.Round(math.Mod(float64(rID), 31)) / 10  // 0..3.1
 					ngap = gap + int((math.Sin(theta*2))*float64(gap)/4)  //  gap +/- gap/4
 					nccs = ccs + int((math.Sin(theta*4))*float64(ccs)/10) //  gap +/- gap/4
-					// no variation in gap or read length
-					// ngap = gap
-					// nccs = ccs
+					if noVAR == "novar" {
+						// no variation in gap or read length
+						ngap = gap
+						nccs = ccs
+					}
 
 					index += ngap
 					fasta = fasta[ngap:]
 				}
-
 			}
 		} else {
-			fmt.Println("end of input: Regions processed: ", regions)
+			log.Println("end of input: Regions processed: ", regions)
 			//fmt.Println("end of input: : ", regions)
-			fmt.Println("reads Written: ", rID)
-			fmt.Println(" base pairs processed: ", bp)    //  index+ccs will be close
-			fmt.Println(" base pairs written: ", ccs*rID) //  index+ccs will be close
+			log.Println("reads Written: ", rID)
+			log.Println(" base pairs processed: ", bp)    //  index+ccs will be close
+			log.Println(" base pairs written: ", ccs*rID) //  index+ccs will be close
 			// fmt.Printf(">|%09d|%s\n", rID, rName)
 			// fmt.Printf("%s\n", aRead)
 			break
 		}
 
 	}
-	fmt.Println("Ending time is", time.Now(), " Lines read: ", linesRead)
+	log.Println("Ending time is", time.Now(), " Lines read: ", linesRead)
 }
 
 func revComp(aR string) (x string) {
@@ -169,7 +224,7 @@ func pipeorfileOK() {
 	var inFile bool = false
 
 	if runtime.GOOS == "windows" {
-		fmt.Println("- -   -  - > Windows detected. Note: Window pipes not implemented, file argument ok.")
+		log.Println("- -   -  - > Windows detected. Note: Window pipes not implemented, file argument ok.")
 	} else {
 		// Do we have piped input?
 		info, err = os.Stdin.Stat() // standard input file descriptor
@@ -179,7 +234,7 @@ func pipeorfileOK() {
 		}
 		if info.Mode()&os.ModeNamedPipe != 0 { // is data begin piped in?
 			// we have a pipe input
-			fmt.Println("we have a pipe input")
+			log.Println("we have a pipe input")
 			inPipe = true
 		}
 	}
@@ -187,8 +242,8 @@ func pipeorfileOK() {
 	// Do we have argument input?
 	//var file *os.File
 	if len(os.Args) > 1 { // do we have arguments : ie a file to read?
-		fmt.Print(os.Args[1])
-		fmt.Println(" : argument (file) input")
+		log.Print(os.Args[1])
+		log.Println(" : argument (file) input")
 		file, err := os.Open(os.Args[1])
 		if err != nil {
 			fmt.Println("error opening file= ", err)
@@ -208,16 +263,17 @@ func pipeorfileOK() {
 
 	if (inPipe || inFile) == false {
 		// no input
-		fmt.Println("- -   -  - > No input detected ?? exiting")
-		fmt.Println("- -   -  - > Usage: Pipe numbers into program (Linux only)")
-		fmt.Println("- -   -  - > awk '{ print $3 }' datafile.dat | nebulostat")
-		fmt.Println("- -   -  - > or use with a file argument (Linux or Windows)")
-		fmt.Println("- -   -  - > nebulostat datafile.dat")
-		fmt.Println("- -   -  - > or awk version")
-		fmt.Println("- -   -  - > awk -f nebulostat.awk datafile.dat,   ")
-		fmt.Println("- -   -  - > or pipe in:")
-		fmt.Println("- -   -  - > awk '{ print $3 }' datafile.dat | awk -f nebulostat.awk")
-		fmt.Println("- -   -  - > File input must consist of one number per line.")
+		fmt.Println("- -   ->>->> No input detected ?? exiting. Create reads from a genome (fasta formatted)")
+		fmt.Println("Generate synthetic CCS reads from a alignment. Usage:")
+		fmt.Printf("\n             ccsSynthesis /PATH/GRCH38chr8-REF.fa > /PATH/chr8_revcompSim.fa\n\n")
+		fmt.Println("- -   -  - > Usage: Pipe numbers into program (Linux only): awk '{ print $0 }' datafile.fa I ccsSynthesis")
+		fmt.Println("- -   -  - > or use with a file argument (Linux or Windows): ccsSynthesis datafile.fa")
+		fmt.Println("- -   -  - > File input must be in fasta format.")
+		fmt.Println("- -   -  - > Alter by appending required values, read depth and (optionally) read length to input file ")
+		fmt.Println("- -   -  - > ./ccsSynthesis /PATH/GRCH38chr8-REF.fa 10 10000 > /PATH/chr8_revcompSim.fa")
+		fmt.Println("- -   -  - > can have new read depth without read length (15000 will be used).")
+		fmt.Println("- -   -  - > with 'novar' appended to depth and length supplied values, fixed lengths and gaps will be used (no variation).")
+		fmt.Printf("\n- -   -  - > ccsSynthesis datafile.fa 20 10000 novar      With no parameters after file the Default settings are:  15,000 read length and 20x Coverage, variation.\n")
 		os.Exit(1)
 	}
 }
